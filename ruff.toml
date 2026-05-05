@@ -1,0 +1,18 @@
+[lint]
+select = ["E", "F", "I", "N", "UP", "B"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "B008",   # do not perform function calls in default arguments (FastAPI Depends)
+    "N805",   # first argument of a method should be named self — false positives in pydantic
+    "UP007",  # use X | Y instead of Optional[X] — too aggressive for now
+    "B904",   # raise from exc — noisy in task files
+    "F841",   # local variable assigned but never used — some intentional catches
+]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[lint.isort]
+known-first-party = ["src"]
