@@ -1,0 +1,226 @@
+"""
+Report generator — LLM-powered narrative PDF reports.
+
+Pipeline:
+1. Aggregate key metrics from PostgreSQL
+2. Build a structured context for the LLM
+3. Generate Markdown narrative with LLM
+4. Convert Markdown → PDF using weasyprint
+"""
+import json
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+
+from src.db.session import SessionLocal
+from src.db.models import SaasMetric, SaasSubscription, AnomalyRecord
+from src.llm.client import call_llm
+from src.llm.prompts import REPORT_PROMPT, REPORT_SYSTEM
+from src.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+def _get_metrics_summary(dataset_id: str, db) -> dict:
+    """Fetch latest metrics snapshot."""
+    latest = (
+        db.query(SaasMetric)
+        .filter(SaasMetric.dataset_id == dataset_id)
+        .order_by(SaasMetric.period.desc())
+        .first()
+    )
+    if not latest:
+        return {}
+    return {
+        "period": latest.period,
+        "mrr": float(latest.mrr or 0),
+        "new_mrr": float(latest.new_mrr or 0),
+        "churned_mrr": float(latest.churned_mrr or 0),
+        "net_new_mrr": float(latest.net_new_mrr or 0),
+        "active_customers": latest.active_customers,
+        "churn_rate": float(latest.churn_rate or 0),
+        "nrr": float(latest.nrr or 0),
+        "arpu": float(latest.arpu or 0),
+    }
+
+
+def _get_trend_data(dataset_id: str, db, periods: int = 6) -> str:
+    """Fetch last N monthly snapshots for trend analysis."""
+    rows = (
+        db.query(SaasMetric)
+        .filter(SaasMetric.dataset_id == dataset_id)
+        .order_by(SaasMetric.period.desc())
+        .limit(periods)
+        .all()
+    )
+    if not rows:
+        return "No trend data available."
+    lines = ["period | MRR | churn_rate | active_customers"]
+    for r in reversed(rows):
+        lines.append(f"{r.period} | ${float(r.mrr or 0):,.0f} | {float(r.churn_rate or 0):.1%} | {r.active_customers}")
+    return "\n".join(lines)
+
+
+def _get_churned_customers(dataset_id: str, db, limit: int = 5) -> str:
+    """Get top churned customers by MRR lost."""
+    rows = (
+        db.query(SaasSubscription)
+        .filter(
+            SaasSubscription.dataset_id == dataset_id,
+            SaasSubscription.churned == True,
+        )
+        .order_by(SaasSubscription.mrr.desc())
+        .limit(limit)
+        .all()
+    )
+    if not rows:
+        return "No churned customers found."
+    lines = []
+    for r in rows:
+        lines.append(
+            f"- {r.customer_name or r.customer_id}: ${float(r.mrr or 0):,.0f} MRR"
+            f" | {r.plan} | reason: {r.churn_reason_category or 'unknown'}"
+        )
+    return "\n".join(lines)
+
+
+def _get_anomalies_summary(dataset_id: str, db) -> str:
+    """Get top anomalies for the report."""
+    rows = (
+        db.query(AnomalyRecord)
+        .filter(
+            AnomalyRecord.dataset_id == dataset_id,
+            AnomalyRecord.severity.in_(["medium", "high"]),
+        )
+        .order_by(AnomalyRecord.score.desc())
+        .limit(3)
+        .all()
+    )
+    if not rows:
+        return "No significant anomalies detected."
+    lines = []
+    for r in rows:
+        lines.append(
+            f"- [{r.severity.upper()}] {r.column_name}: value={r.value:.2f}"
+            f" | {r.llm_explanation[:100] if r.llm_explanation else 'No explanation'}"
+        )
+    return "\n".join(lines)
+
+
+def _markdown_to_pdf(markdown: str, output_path: str) -> bool:
+    """Convert Markdown to PDF using weasyprint."""
+    try:
+        import markdown as md_lib
+        from weasyprint import HTML, CSS
+
+        # Convert Markdown to HTML
+        html_content = md_lib.markdown(
+            markdown,
+            extensions=["tables", "fenced_code"],
+        )
+
+        # Wrap in styled HTML
+        full_html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {{ font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 12px; color: #1a1a1a; margin: 40px; line-height: 1.6; }}
+  h1 {{ font-size: 22px; color: #1a1a1a; border-bottom: 2px solid #3B8BD4; padding-bottom: 8px; margin-top: 32px; }}
+  h2 {{ font-size: 17px; color: #185FA5; margin-top: 24px; }}
+  h3 {{ font-size: 14px; color: #444; }}
+  table {{ border-collapse: collapse; width: 100%; margin: 16px 0; }}
+  th {{ background: #3B8BD4; color: white; padding: 8px 12px; text-align: left; }}
+  td {{ padding: 6px 12px; border-bottom: 1px solid #e0e0e0; }}
+  tr:nth-child(even) {{ background: #f5f8ff; }}
+  .header {{ background: #1a1a2e; color: white; padding: 24px; margin: -40px -40px 32px; }}
+  .header h1 {{ color: white; border-bottom: 1px solid rgba(255,255,255,.3); }}
+  .footer {{ text-align: center; color: #888; font-size: 10px; margin-top: 40px; border-top: 1px solid #eee; padding-top: 12px; }}
+  code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-size: 11px; }}
+</style>
+</head>
+<body>
+<div class="header"><h1>DataMind — SaaS Analytics Report</h1></div>
+{html_content}
+<div class="footer">Generated by DataMind · {datetime.now().strftime("%Y-%m-%d %H:%M")} · Confidential</div>
+</body>
+</html>"""
+
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        HTML(string=full_html).write_pdf(output_path)
+        logger.info("pdf_generated", path=output_path)
+        return True
+
+    except ImportError as e:
+        logger.warning("pdf_dependencies_missing", error=str(e), hint="pip install weasyprint markdown")
+        return False
+    except Exception as e:
+        logger.error("pdf_generation_failed", error=str(e))
+        return False
+
+
+def generate_report(
+    dataset_id: str,
+    period: str | None = None,
+    output_dir: str = "./data/reports",
+) -> dict:
+    """
+    Generate a full SaaS performance report.
+
+    Returns:
+        {
+            "markdown": str,
+            "pdf_path": str | None,
+            "tokens_used": int,
+            "success": bool
+        }
+    """
+    db = SessionLocal()
+    try:
+        period = period or datetime.now().strftime("%Y-%m")
+
+        # Gather data
+        metrics = _get_metrics_summary(dataset_id, db)
+        trend = _get_trend_data(dataset_id, db)
+        churned = _get_churned_customers(dataset_id, db)
+        anomalies_str = _get_anomalies_summary(dataset_id, db)
+
+        if not metrics:
+            return {"markdown": "", "pdf_path": None, "tokens_used": 0, "success": False,
+                    "error": "No metrics found for this dataset. Run ETL first."}
+
+        prompt = REPORT_PROMPT.format(
+            period=period,
+            metrics_summary=json.dumps(metrics, indent=2),
+            trend_data=trend,
+            churned_customers=churned,
+            anomalies=anomalies_str,
+        )
+
+        markdown, tokens, provider = call_llm(
+            prompt,
+            system=REPORT_SYSTEM,
+            temperature=0.2,
+            max_tokens=2048,
+        )
+
+        logger.info("report_generated", tokens=tokens, provider=provider, period=period)
+
+        # Generate PDF
+        pdf_path = None
+        filename = f"saas_report_{dataset_id[:8]}_{period}.pdf"
+        output_path = str(Path(output_dir) / filename)
+        if _markdown_to_pdf(markdown, output_path):
+            pdf_path = output_path
+
+        return {
+            "markdown": markdown,
+            "pdf_path": pdf_path,
+            "tokens_used": tokens,
+            "success": True,
+            "period": period,
+        }
+
+    finally:
+        db.close()

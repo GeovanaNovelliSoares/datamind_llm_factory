@@ -1,0 +1,156 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: datamind
+      POSTGRES_PASSWORD: datamind
+      POSTGRES_DB: datamind
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datamind"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://datamind:datamind@postgres:5432/datamind
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+    volumes:
+      - ./data:/app/data
+      - ./mlflow_tracking:/app/mlflow_tracking
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://datamind:datamind@postgres:5432/datamind
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+    volumes:
+      - ./data:/app/data
+      - ./mlflow_tracking:/app/mlflow_tracking
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A src.workers.celery_app.celery_app worker
+      --loglevel=info --queues=etl --concurrency=2
+
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    restart: unless-stopped
+    ports:
+      - "5555:5555"
+    env_file: .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+    depends_on:
+      - redis
+    command: >
+      celery -A src.workers.celery_app.celery_app flower --port=5555
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ui
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE=http://api:8000/api/v1
+    depends_on:
+      - api
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_SECURITY_ADMIN_PASSWORD=datamind
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    depends_on:
+      - prometheus
+
+  mlflow:
+    image: python:3.11-slim
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlflow_tracking:/mlflow
+    command: >
+      bash -c "pip install mlflow -q &&
+      mlflow server --backend-store-uri /mlflow --host 0.0.0.0 --port 5000"
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
