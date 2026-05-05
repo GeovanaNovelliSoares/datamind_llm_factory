@@ -12,11 +12,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11", cache: pip }
-      - run: pip install ruff
-      - run: ruff check src/ tests/
-      - run: ruff format --check src/ tests/
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff auto-fix
+        run: |
+          ruff format src/ tests/
+          ruff check src/ tests/ --fix --unsafe-fixes || true
+
+      - name: Ruff check (fail on remaining errors)
+        run: |
+          ruff check src/ tests/
+          ruff format --check src/ tests/
 
   test:
     name: Tests
