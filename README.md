@@ -18,7 +18,7 @@ Ask questions in natural language. Detect anomalies automatically. Generate PDF 
 
 ## The Problem
 
-SaaS companies accumulate critical business data — MRR, churn, subscriptions — scattered across spreadsheets, CRMs, and databases. Extracting insights from this data requires:
+SaaS companies accumulate critical business data  MRR, churn, subscriptions  scattered across spreadsheets, CRMs, and databases. Extracting insights from this data requires:
 
 - A data engineer to build ETL pipelines
 - An analyst to write SQL queries
@@ -92,7 +92,7 @@ SaaS companies accumulate critical business data — MRR, churn, subscriptions �
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    OUTPUT — FastAPI + Streamlit                      │
+│                    OUTPUT  FastAPI + Streamlit                      │
 │   POST /query    GET /insights/anomalies    GET /insights/report    │
 │   Streamlit UI with 6 pages   PDF download   Prometheus /metrics    │
 └─────────────────────────────────────────────────────────────────────┘
@@ -100,7 +100,7 @@ SaaS companies accumulate critical business data — MRR, churn, subscriptions �
 
 ---
 
-## Stack — 100% Free to Run
+## Stack  100% Free to Run
 
 | Layer | Technology | Why This Choice |
 |---|---|---|
@@ -129,7 +129,7 @@ SaaS companies accumulate critical business data — MRR, churn, subscriptions �
 ```
 datamind/
 ├── src/
-│   ├── config.py                        # pydantic-settings — single source of truth
+│   ├── config.py                        # pydantic-settings  single source of truth
 │   ├── logger.py                        # structlog JSON structured logging
 │   ├── ingestion/
 │   │   ├── connectors/
@@ -201,7 +201,7 @@ datamind/
 
 ## Quick Start
 
-### Option A — Docker Compose (recommended)
+### Option A  Docker Compose (recommended)
 
 Everything runs with a single command.
 
@@ -327,46 +327,46 @@ curl http://localhost:8000/api/v1/insights/report/download/abc123 -o report.pdf
 
 ## ETL Pipeline Detail
 
-The pipeline runs entirely in a Celery worker — non-blocking, retriable, progress-tracked.
+The pipeline runs entirely in a Celery worker  non-blocking, retriable, progress-tracked.
 
 ```
-Stage 1 — Fetch (5% → 15%)
+Stage 1  Fetch (5% → 15%)
   CSV/Excel/SQL/API → pandas DataFrame
 
-Stage 2 — Schema Detection (15% → 25%)
+Stage 2  Schema Detection (15% → 25%)
   auto-maps column names to canonical SaaS schema
   (e.g. "monthly_revenue" → "mrr", "client_id" → "customer_id")
 
-Stage 3 — Clean (25% → 40%)
+Stage 3  Clean (25% → 40%)
   drop columns with >50% nulls
   remove duplicates
   infer and cast types (dates, booleans, numerics)
   fill remaining nulls (median for numeric, "unknown" for strings)
   cap outliers via IQR (3× fence)
 
-Stage 4 — Transform (40% → 55%)
+Stage 4  Transform (40% → 55%)
   compute ARR = MRR × 12
   compute lifetime_months from start_date → churn_date
   build monthly MRR snapshots (MRR, new MRR, churned MRR, NRR, ARPU)
 
-Stage 5 — LLM Enrichment (55% → 70%)
+Stage 5  LLM Enrichment (55% → 70%)
   plan_category      → starter | growth | professional | enterprise | custom
   churn_reason_category → price | product | competition | support | usage | other
   churn_risk_score   → 0.0 – 1.0
   industry_category  → tech | finance | healthcare | retail | ...
   runs in batches of 50 rows to respect Groq rate limits
 
-Stage 6 — Validation (70% → 80%)
+Stage 6  Validation (70% → 80%)
   mrr >= 0 (error)
   customer_id not-null ratio >= 99% (error)
   churn rate <= 95% (warning)
   customer_id unique ratio >= 90% (warning)
 
-Stage 7 — Store (80% → 90%)
+Stage 7  Store (80% → 90%)
   upsert saas_subscriptions table
   upsert saas_metrics monthly snapshots
 
-Stage 8 — Anomaly Detection (90% → 100%)
+Stage 8  Anomaly Detection (90% → 100%)
   Z-score per numeric column (threshold: 2.5σ)
   IQR per numeric column (1.5× fence)
   LLM generates business explanation for each anomaly
@@ -400,7 +400,7 @@ Input:  plan="starter", mrr=49, lifetime=2.3 months, seats=1, country="BR"
 Output: churn_risk_score=0.78, risk_level="high", main_factor="low_tenure"
 ```
 
-All prompts are in `src/llm/prompts.py` — fully auditable and tweakable without touching business logic.
+All prompts are in `src/llm/prompts.py`  fully auditable and tweakable without touching business logic.
 ---
 
 ## NL→SQL Agent
@@ -409,7 +409,7 @@ Converts natural language to safe, read-only PostgreSQL queries.
 
 **How it works:**
 
-1. Full table schema fits in LLM context (<1000 tokens) — no retrieval needed
+1. Full table schema fits in LLM context (<1000 tokens)  no retrieval needed
 2. LLM generates SQL with `temperature=0.0` for determinism
 3. Query is validated: must start with `SELECT`, no `INSERT/UPDATE/DELETE/DROP`
 4. Executes against PostgreSQL, returns up to 100 rows
@@ -435,13 +435,13 @@ Converts natural language to safe, read-only PostgreSQL queries.
 
 Full rationale in [`docs/`](docs/):
 
-### [ADR-001](docs/ADR-001-llm-enrichment.md) — LLM enrichment inside the ETL pipeline
+### [ADR-001](docs/ADR-001-llm-enrichment.md)  LLM enrichment inside the ETL pipeline
 
 > We run LLM enrichment as a pipeline stage (not post-hoc) so that enriched fields are available at query time. The `plan_category`, `churn_reason_category`, and `churn_risk_score` fields are first-class database columns that NL→SQL can filter and aggregate on.
 
-### [ADR-002](docs/ADR-002-nl-to-sql.md) — NL→SQL over full RAG for structured queries
+### [ADR-002](docs/ADR-002-nl-to-sql.md)  NL→SQL over full RAG for structured queries
 
-> Structured data belongs in SQL. RAG embeds rows as unstructured text, losing the relational structure needed for aggregations and joins. Our schema fits in the LLM context window, making retrieval unnecessary. Generated SQL is shown to users — making answers verifiable and auditable.
+> Structured data belongs in SQL. RAG embeds rows as unstructured text, losing the relational structure needed for aggregations and joins. Our schema fits in the LLM context window, making retrieval unnecessary. Generated SQL is shown to users  making answers verifiable and auditable.
 
 ---
 
@@ -498,7 +498,7 @@ Push to main
     │
     ├── Lint (ruff check + ruff format)
     │
-    ├── Tests (pytest — unit + integration)
+    ├── Tests (pytest  unit + integration)
     │   ├── PostgreSQL 16 service
     │   └── Redis 7 service
     │
@@ -523,9 +523,9 @@ git push origin main  # triggers CI → Docker build → Render deploy
 ```
 
 Services deployed:
-- `datamind-api` — FastAPI web service
-- `datamind-worker` — Celery background worker
-- `datamind-redis` — Redis instance
+- `datamind-api`  FastAPI web service
+- `datamind-worker`  Celery background worker
+- `datamind-redis`  Redis instance
 
 ### Streamlit Community Cloud (UI)
 
@@ -558,7 +558,7 @@ make clean        # remove data/, cache, coverage reports
 
 | Variable | Default | Description |
 |---|---|---|
-| `GROQ_API_KEY` | — | **Required.** Get free at console.groq.com |
+| `GROQ_API_KEY` |  | **Required.** Get free at console.groq.com |
 | `DATABASE_URL` | postgres://datamind:datamind@localhost/datamind | PostgreSQL connection |
 | `REDIS_URL` | redis://localhost:6379/0 | Redis connection |
 | `LLM_PROVIDER` | groq | `groq` or `ollama` |
@@ -569,8 +569,6 @@ make clean        # remove data/, cache, coverage reports
 | `NULL_RATIO_THRESHOLD` | 0.5 | Drop columns with more nulls than this ratio |
 | `LOG_FORMAT` | json | `json` (production) or `console` (development) |
 | `ENVIRONMENT` | development | `development` or `production` |
-
-Full list in [`.env.example`](.env).
 
 ---
 
